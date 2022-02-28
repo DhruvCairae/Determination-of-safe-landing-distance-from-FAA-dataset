@@ -1,0 +1,517 @@
+---
+title: "Flight Landing Data Analysis"
+author: "Dhruv Cairae & Others"
+date: "January 25, 2022"
+output: html_document
+---
+
+
+# Import Required Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
+rm(list = ls())
+
+
+library(tidyverse)
+library(readxl)
+library(MASS)
+library(reshape2)
+
+```
+
+
+# Initial Exploration of the Data
+
+***
+
+## Step 1
+
+```{r}
+# Import datasets
+FAA1 <- read_excel("C:/Users/Dhruv Cairae/Desktop/FAA1.xls")
+FAA2 <- read_excel("C:/Users/Dhruv Cairae/Desktop/FAA2.xls")
+```
+
+## Step 2
+
+```{r}
+str(FAA1)
+str(FAA2)
+```
+
+FAA1 has 8 variables and a 800 observations whereas FAA2 has 7
+variables and 150 observations. Variables and their class is identical across
+data sets, the only difference being the absence of duration variables in FAA2
+
+## Step 3
+
+```{r}
+FAA <- full_join(FAA1, FAA2)
+```
+
+No unique identifier such as flight number exists in  both the data frames such as flight number. This creates the complication of an absence of a unique column to join the data frames. The process of full join eliminates rows that have the exact same values across the 7 common variables in both the data frames by default. Its not possible to determine without checking with source of data that the if all values are identical across the two data sets with duration missing, they are indeed identical,there is no time stamp or unique identifier per line item. However for further analysis it is assumed that if all 7 values are common across both data frames, they are indeed identical and analysis shall proceed with 850 observations across 8 variables.
+
+```{r}
+distinct(FAA)
+
+# Remove the redundant FAA1 and FAA2 variables from memory
+rm(FAA1, FAA2)
+```
+
+The operation distinct to eliminate duplicates does not remove any rows, therefore there are no duplicates.
+
+## Step 4
+
+```{r}
+str(FAA)
+summary(FAA)
+```
+
+850 observations across 8 variables
+
+## Step 5
+
+Observations of negative height, clearly data entry errors, need rectification. Duration has missing observations. Observations with maximum distance and those above the 3rd quantile, should be focused on. Speed Air needs more research due to the large proportion of missing data. At this preliminary stage focus would be on data integrity, obvious outliers or anomalies that appear problematic & values of the response variable that are of significance. 
+
+# Data Cleaning and Further Exploration
+
+***
+
+## Step 6: Abnormal Value Removal
+
+From the summary from Step 4, there are abnormal observations in the dataset:
+
+1) there are durations under 40 minutes in the dataset, as well as NAs.
+2) there are observations of speed_ground less than 30 mpg and greater than 140 mph.
+3) speed_air has values above 140 mph and 642 NAs.
+4) height has a minimum less than 6 meters.
+5) distance has value above 6000 feet, but we want to keep this because we are looking for overruns.
+
+```{r}
+# Using table, we can confirm that only airbus and boeing aircraft are present.
+FAA %>% dplyr::select(aircraft) %>% table()
+```
+
+```{r}
+# Record the number of precleaning observations
+no_pre_clean <- nrow(FAA)
+
+# Delete the abnormal observations from the dataset.
+FAA %>% 
+  # Remove missing values from the dataset
+  filter(!is.na(duration), !is.na(speed_air)) %>% 
+  # Remove remaining anomalous observations
+  filter(duration > 40,
+         between(speed_ground, 30, 140),
+         between(speed_air, 30, 140)
+  ) -> FAA
+
+# Number of Rows Deleted: 654
+no_pre_clean - nrow(FAA)    
+```
+
+## Step 7
+
+```{r}
+# Check structure of dataset and no. of variables
+str(FAA)
+
+# The structure is unchanged, but now there are only 196 observations of 8
+# variables.
+
+# Calculate summary statistics for each variable.
+summary(FAA)
+
+# Table of aircraft manufacturer values.
+FAA %>% dplyr::select(aircraft) %>% table()
+```
+
+Our cleaning hit the data from both manufacturers hard, especially airbus.
+
+## Step 8
+
+```{r, warning=FALSE, message=FALSE}
+# Generate histograms for each numeric variable.
+# Duration
+FAA %>% 
+  ggplot() +
+  geom_histogram(aes(x = duration)) +
+  labs(x = "Duration (minutes)",
+       y = "Number of Observations",
+       title = "Duration Histogram")
+
+# Number of Passengers
+FAA %>% 
+  ggplot() +
+  geom_histogram(aes(x = no_pasg)) +
+  labs(x = "Number of Passengers",
+       y = "Number of Observations",
+       title = "Number of Passengers Histogram")
+
+# Ground Speed
+FAA %>% 
+  ggplot() +
+  geom_histogram(aes(x = speed_ground)) +
+  labs(x = "Ground Speed (MPH)",
+       y = "Number of Observations",
+       title = "Ground Speed Histogram")
+
+# Air Speed
+FAA %>% 
+  ggplot() +
+  geom_histogram(aes(x = speed_air)) +
+  labs(x = "Air Speed (MPH)",
+       y = "Number of Observations",
+       title = "Air Speed Histogram")
+
+# Height
+FAA %>% 
+  ggplot() +
+  geom_histogram(aes(x = height)) +
+  labs(x = "Height (meters)",
+       y = "Number of Observations",
+       title = "Height Histogram")
+
+# Pitch
+FAA %>% 
+  ggplot() +
+  geom_histogram(aes(x = pitch)) +
+  labs(x = "Pitch (°)",
+       y = "Number of Observations",
+       title = "Pitch Histogram")
+
+# Distance
+FAA %>% 
+  ggplot() +
+  geom_histogram(aes(x = distance)) +
+  labs(x = "Distance (feet)",
+       y = "Number of Observations",
+       title = "Distance Histogram")
+
+```
+
+## Step 9
+
+1. Distance has a right skewed distribution, with 75% of planes travelling less than 3192 ft.
+2. Air Speed and Ground Speed both have a right tailed distribution.
+3. Planes typically have a height of 30 m (~90 ft) on approach to the runway.
+4. Number of passengers has a symmetric distribution, with a mean of ~60 passengers
+5. Flight duration was on average ~150 minutes, and appears to be symmetrically distributed
+
+# Identification of Important Factors for Landing Distance
+
+***
+
+## Step 10
+
+```{r}
+# Converting aircraft to factor and creating a corresponding binary variable -
+# aircraft_type.
+
+names(FAA)
+
+FAA %>%
+  mutate(aircraft = as.factor(aircraft)) %>% 
+  mutate(aircraft_type = ifelse(aircraft == "boeing", 1, 0)) %>% 
+  dplyr::select(aircraft, aircraft_type, duration, no_pasg,
+         speed_ground, speed_air, height, pitch, distance) -> FAA
+
+# Computing pairwise correlation between distance and the numeric features. 
+# Assigning the resultant table proper column names and adding the direction 
+# column as instructed.
+table_1 <- data.frame(cor(FAA[2:8], FAA$distance))
+colnames(table_1) <- c("coefficient")
+
+table_1 <- tibble::rownames_to_column(table_1, "features") %>% 
+  arrange(desc(abs(coefficient))) %>% 
+  mutate(direction = ifelse(coefficient < 0, "negative","positive"))
+
+table_1
+```
+
+
+The correlation coefficient is very high between distance and speed_air(0.945) as well as speed_ground(0.932), indicating that flights with higher speed in both air and land have higher landing distance. Speed in air seems to have a slightly higher positive correlation with the landing distance than speed on the ground. The remaining features all have extremely low coefficients (less than 0.1). Out of all features, number of passengers appears to have a very weak negative correlation with landing distance.
+
+## Step 11
+
+The scatterplots of landing distance against the other features are plotted using the code below. The scatteplots reveal a seemingly strong linear relationship between distance and speed of the aircraft in both air and on land, which is expected based on the correlation coefficient values calculated earlier. However, the distributions of height, pitch, number of passengers and duration do not reveal a linear relationship with distance. This corroborates the very low correlation coefficient values computed in the previous step.
+
+
+```{r}
+# Air Speed
+p1 <- ggplot(FAA, aes(x = distance, y = speed_air)) +
+  geom_point(alpha = 0.9) + 
+  labs(y = "speed_air", title = "")
+
+# Ground Speed
+p2 <- ggplot(FAA, aes(x = distance, y = speed_ground)) +
+  geom_point(alpha = 0.9) + 
+  labs(y = "speed_ground", title = "")
+
+# Height
+p3 <- ggplot(FAA, aes(x = distance, y = height)) +
+  geom_point(alpha = 0.9) + 
+  labs(y = "height", title = "")
+
+# Pitch
+p4 <- ggplot(FAA, aes(x = distance, y = pitch)) +
+  geom_point(alpha = 0.9) + 
+  labs(y = "pitch", title = "")
+
+# Duration
+p5 <- ggplot(FAA, aes(x = distance, y = duration)) +
+  geom_point(alpha = 0.9) + 
+  labs(y = "duration", title = "")
+
+# Number of Passengers
+p6 <- ggplot(FAA, aes(x = distance, y = no_pasg)) +
+  geom_point(alpha = 0.9) + 
+  labs(y = "no_pasg", title = "")
+
+
+gridExtra::grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 3)
+```
+
+## Step 12
+
+Repeating the variable relationship plots including aircraft type to determine the effect of aircraft carrier in the relationships: The plots reveal the same patterns as observed in the previous Step 11. The scatterplots reveal a linear relationship between distance and speed of the aircraft in both air and on land irrespective of aircraft type. However, the distributions of height, pitch , number of passengers and duration do not reveal a linear relationship with distance for either type of carrier.
+
+```{r}
+# Air Speed
+p12 <- ggplot(FAA, aes(x = distance, y = speed_air, color = aircraft)) +
+  geom_point(alpha = 0.9) +
+  theme_light() +
+  labs(x = "distance", y = "speed_air") +
+  theme(legend.title = element_blank(), legend.position = c(0.2, 0.8))
+
+# Ground Speed 
+p22 <- ggplot(FAA, aes(x = distance, y = speed_ground, color = aircraft)) +
+  geom_point(alpha = 0.9) + 
+  theme_light() +
+  labs(x = "distance", y = "speed_ground") +
+  theme(legend.title = element_blank(), legend.position = "none")
+
+# Height
+p32 <- ggplot(FAA, aes(x = distance, y = height, color = aircraft)) +
+  geom_point(alpha = 0.9) + 
+  theme_light() +
+  labs(x = "distance", y = "height") +
+  theme(legend.title = element_blank(), legend.position = "none")
+
+# Pitch
+p42 <- ggplot(FAA, aes(x = distance, y = pitch, color = aircraft)) +
+  geom_point(alpha = 0.9) + 
+  theme_light() +
+  labs(x = "distance", y = "pitch") +
+  theme(legend.title = element_blank(), legend.position = "none")
+
+# Duration
+p52 <- ggplot(FAA, aes(x = distance, y = duration, color = aircraft)) +
+  geom_point(alpha = 0.9) + 
+  theme_light() +
+  labs(x = "distance", y = "duration") +
+  theme(legend.title = element_blank(), legend.position = "none")
+
+# Number of Passengers
+p62 <- ggplot(FAA, aes(x = distance, y = no_pasg, color = aircraft)) +
+  geom_point(alpha = 0.9) + 
+  theme_light() +
+  labs(x = "distance", y = "no_pasg") +
+  theme(legend.title = element_blank(), legend.position = "none")
+
+gridExtra::grid.arrange(p12, p22, p32, p42, p52, p62, ncol = 3)
+```
+
+
+# Regression Using a Single Factor
+
+***
+
+## Step 13
+
+```{r}
+attach(FAA)
+
+lr1 <- lm(distance ~ no_pasg)
+lr2 <- lm(distance ~ duration)
+lr3 <- lm(distance ~ height)
+lr4 <- lm(distance ~ pitch)
+lr5 <- lm(distance ~ aircraft_type)
+lr6 <- lm(distance ~ speed_air)
+lr7 <- lm(distance ~ speed_ground)
+
+mod <- list(lr1, lr2, lr3, lr4, lr5, lr6, lr7)
+r2 <- lapply(mod, FUN = function(lin.mod) summary(lin.mod)$coefficients[8])
+r3 <- lapply(mod, FUN = function(lin.mod) summary(lin.mod)$coefficients[2])
+r4 <- list('no_pasg','duration','height','pitch','aircraft_type','speed_air','speed_ground')
+
+r <- do.call(rbind, Map(data.frame, features = r4, p_value = r2, Estimate = r3 ))
+
+r %>% 
+  mutate(direction = ifelse(Estimate >= 0,'Positive','Negative')) %>% 
+  dplyr::select(features,p_value,direction) %>% 
+  arrange(p_value) -> table_2
+
+table_2
+```
+
+## Step 14
+
+```{r}
+FAA %>% mutate_at(c(3:8), ~(scale(.) %>% as.vector)) -> FAA_normalized
+
+attach(FAA_normalized)
+lr_1 <- lm(distance ~ no_pasg)
+lr_2 <- lm(distance ~duration)
+lr_3 <- lm(distance ~ height)
+lr_4 <- lm(distance ~pitch)
+lr_5 <- lm(distance ~ aircraft_type)
+lr_6 <- lm(distance ~ speed_air)
+lr_7 <- lm(distance ~ speed_ground)
+models_norm <- list(lr_1, lr_2, lr_3,lr_4, lr_5, lr_6, lr_7)
+coeff_norm <- lapply(models_norm, FUN = function(lin.mod) summary(lin.mod)$coefficients[2])
+variable_name <- list('no_pasg','duration','height','pitch','aircraft_type','speed_air','speed_ground')
+tab <- do.call(rbind, Map(data.frame, features = variable_name, Estimate = coeff_norm ))
+
+tab %>% 
+  mutate(direction = ifelse(Estimate >= 0,'Positive','Negative')) %>%
+  arrange(desc(Estimate)) -> table_3
+
+table_3
+```
+
+## Step 15
+
+```{r}
+names(table_1)
+names(table_2)
+names(table_3)
+
+merge_1 <- merge(table_1, table_3, by = 'features')
+merge_1
+merge_2 <- merge(merge_1, table_2, by = 'features')
+merge_2
+
+table_0 <- subset(merge_2, select = -c(direction.x,direction.y,direction))
+table_0
+
+table_0 %>% arrange(desc(coefficient))
+```
+
+Looking at correlation coffecients from table_1, and beta coefficients and p-value from table_2 and table_3 we find that speed_air, speed_ground, aircraft_type are relatively important features when compared to other features like height, pitch, duration and no_pasg. The table_0 lists the features in their decreasing order of importance.
+
+
+# Check Collinearity 
+
+***
+
+## Step 16
+
+```{r}
+attach(FAA)
+
+l1 <- lm(distance ~ speed_ground)
+l2 <- lm(distance ~ speed_air)
+l3 <- lm(distance ~ speed_ground +speed_air)
+
+model <- list(l1,l2,l3)
+
+coeffecient <- lapply(model,function(lin.mod) 
+  if (length(lin.mod$coefficients) == 2) lin.mod$coefficients[2]
+  else lin.mod$coefficients[2:3])
+```
+
+Yes there is a significant change in sign between speed_ground & speed_air. We need to check correlation between the two variables.
+
+```{r}
+cor(speed_ground,speed_air)
+```
+
+The two variable are very highly correlated and we need to keep only one for analysis. We will keep the one which has better univariate fitness, i.e., speed_air.
+
+# Variable Ranking Based on Table 0
+
+***
+
+On the basis of table 0 we have 6 important features: speed_air, aircraft_type, height, pitch, duration, and no_pasg.
+
+## Step 17
+
+```{r}
+list_imp <- c('speed_air','aircraft_type','height','pitch','duration','no_pasg')
+
+m1 <- lm(distance ~ speed_air)
+m2 <- lm(distance ~ speed_air + aircraft_type)
+m3 <- lm(distance ~ speed_air + aircraft_type + height)
+m4 <- lm(distance ~ speed_air + aircraft_type + height + pitch)
+m5 <- lm(distance ~ speed_air + aircraft_type + height + pitch + duration)
+m6 <- lm(distance ~ speed_air + aircraft_type + height + pitch + duration + no_pasg)
+
+model <- list(m1, m2, m3, m4, m5, m6)
+
+r_sq <- as.data.frame(lapply(model, function(x) summary(x)$r.squared))
+
+colnames(r_sq) <- c("1", "2", "3", "4", "5", "6")
+
+r_sq <- reshape2::melt(r_sq)
+
+r_sq$value <- round(r_sq$value, 4)*100
+
+ggplot(r_sq,aes(x = variable,y = value, group = 1)) +
+  geom_path() +
+  geom_point(shape = 21, color = "black", fill = "#69b3a2", size = 1) +
+  labs(x = "Number of Features", y = "R-square percentage") + 
+  geom_text(aes(label = value), size = 4) +
+  theme(legend.title = element_blank(), legend.position = "none")
+```
+
+R-square increases or stays the same every time a variable is added. It plateaus after 3 features.
+
+## Step 18
+
+```{r}
+r_adj_sq <- as.data.frame(lapply(model,function(x) summary(x)$adj.r.squared))
+
+colnames(r_adj_sq) <- c("1", "2", "3", "4", "5", "6")
+
+r_adj_sq <- reshape2::melt(r_adj_sq)
+
+r_adj_sq$value <- round(r_adj_sq$value,5)*100
+
+ggplot(r_adj_sq,aes(x = variable, y = value, group = 1)) + 
+  geom_path() +
+  geom_point(shape = 21, color = "black", fill = "#69b3a2", size = 1) +
+  labs(x = "Number of Features", y = "Adj.R-square percentage") +
+  geom_text(aes(label = value), size = 4) +
+  theme(legend.title = element_blank(), legend.position = "none")
+```
+
+We observe that the Adjusted R-square values decrease as for each additional feature after the 3rd.
+
+## Step 19
+
+```{r}
+aic_value <- as.data.frame(AIC(m1, m2, m3, m4, m5, m6))
+
+print(aic_value)
+```
+From the AIC model we can see the m3 model is better as it has lowest AIC.
+
+## Step 20
+
+From both Adj R-square and AIC we see that model m3 perform better. Features we should select for our model are speed_air, aircraft_type, and height.
+
+## Step 21
+
+```{r}
+# Initialize a model using only the intercept
+null_model <- lm(distance ~ 1, data = FAA)
+summary(null_model)
+
+step <- stepAIC(object = null_model,
+               scope = list(lower = null_model, upper = m6),
+               direction = "forward")
+step$anova
+```
+
+Step AIC chooses distance ~ speed_air + aircraft_type + height as its final model. In other words, m3.
